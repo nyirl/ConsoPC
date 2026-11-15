@@ -1,4 +1,4 @@
-# HWiNFO Live
+# ConsoPC
 
 Tableau de bord web en temps réel pour suivre la consommation d'énergie (et les autres capteurs) de votre PC, à partir de [HWiNFO](https://www.hwinfo.com/).
 
@@ -19,10 +19,27 @@ Le script lit la mémoire partagée de HWiNFO et sert une page locale qui se met
 - Python 3.8 ou plus récent
 - HWiNFO64, fenêtre **Capteurs** (Sensors) ouverte
 
+## Installation
+
+Avec Git :
+
+```
+git clone https://github.com/VOTRE_COMPTE/ConsoPC.git
+cd ConsoPC
+```
+
+Ou en téléchargeant uniquement le script (PowerShell) :
+
+```
+irm https://raw.githubusercontent.com/VOTRE_COMPTE/ConsoPC/main/hwinfo_live.py -OutFile hwinfo_live.py
+```
+
+Pour mettre à jour une installation faite avec Git : `git pull`.
+
 ## Configuration de HWiNFO
 
 1. Ouvrez HWiNFO en mode **Capteurs**.
-2. Ouvrez les **Paramètres** (touche `Ctrl+S` depuis la fenêtre principale).
+2. Ouvrez les **Paramètres** (touche `Ctrl+S` depuis la fenêtre principale), puis **Réglages principaux** si besoin.
 3. Cochez **Shared Memory Support** (« Prise en charge de la mémoire partagée »), puis validez avec **OK**.
 4. Relancez la fenêtre Capteurs.
 
