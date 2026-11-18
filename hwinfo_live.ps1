@@ -1,5 +1,5 @@
 ﻿<#
-  hwinfo_live.ps1 (v3) - ConsoPC : tableau en direct des capteurs HWiNFO (sans Python)
+  hwinfo_live.ps1 (v4) - ConsoPC : tableau en direct des capteurs HWiNFO (sans Python)
 
   Lit les valeurs que HWiNFO publie dans le registre Windows
   (HKCU\SOFTWARE\HWiNFO64\VSB) et les affiche dans une page web locale.
@@ -118,6 +118,8 @@ $page = @'
  .meter i{display:block;height:100%;background:#2563eb;border-radius:3px}
  canvas{width:100%;height:220px;background:#8881;border-radius:6px;margin:12px 0}
  .err{color:#dc2626;font-weight:600}
+ .legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:13px;margin:-4px 0 12px}
+ .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
 </style></head><body>
 <h1>ConsoPC – Consommation en direct</h1>
 <div class="bar">
@@ -136,7 +138,8 @@ $page = @'
   <span class="muted" id="status">connexion…</span>
 </div>
 <canvas id="chart" width="1200" height="220"></canvas>
-<div class="muted">Colonne Σ : cochez les lignes à additionner dans l'estimation (évitez de cocher des lignes qui se recoupent). Clic ailleurs sur une ligne : l'ajouter au graphique.</div>
+<div class="legend" id="legend"></div>
+<div class="muted">Colonne Σ : cochez les lignes à additionner dans l'estimation (évitez de cocher des lignes qui se recoupent). Chaque ligne cochée a sa courbe, avec la courbe de l'estimation totale en trait épais. Clic ailleurs sur une ligne : ajouter une courbe sans l'inclure dans le total.</div>
 <table><thead><tr><th title="Compter dans le total">Σ</th><th>Capteur</th><th>Mesure</th><th>Actuel</th><th>Min</th><th>Moy</th><th>Max</th><th></th></tr></thead>
 <tbody id="rows"></tbody></table>
 <script>
@@ -148,7 +151,10 @@ const save=()=>{try{localStorage.setItem("consopc",JSON.stringify({tot:[...tot],
 const $=id=>document.getElementById(id);
 $("others").value=others; $("eff").value=eff;
 const fmt=(v,u)=>(Math.abs(v)>=100?v.toFixed(0):v.toFixed(2))+" "+u;
-const colors=["#111827","#2563eb","#dc2626","#16a34a","#d97706","#9333ea","#0891b2","#be185d"];
+const palette=["#2563eb","#dc2626","#16a34a","#d97706","#9333ea","#0891b2","#be185d","#65a30d","#ea580c","#4f46e5"];
+const col={}; let ci=0;
+const color=id=>id==="TOTAL"?getComputedStyle(document.body).color:(col[id]??=palette[(ci++)%palette.length]);
+const prune=()=>Object.keys(hist).forEach(k=>{if(k!=="TOTAL"&&!tot.has(k)&&!sel.has(k)) delete hist[k];});
 const push=(k,v)=>{(hist[k]??=[]).push(v); if(hist[k].length>MAXPTS) hist[k].shift();};
 
 function total(){
@@ -161,7 +167,7 @@ async function tick(){
     if(j.error){$("status").innerHTML='<span class="err">'+j.error+'</span>';return;}
     data=j.readings;
     push("TOTAL",total().est);
-    data.forEach(d=>{ if(sel.has(d.id)) push(d.id,d.value); });
+    data.forEach(d=>{ if(tot.has(d.id)||sel.has(d.id)) push(d.id,d.value); });
     $("status").textContent="mis à jour "+new Date(j.time*1000).toLocaleTimeString();
     render();
   }catch(e){$("status").innerHTML='<span class="err">serveur injoignable</span>';}
@@ -190,8 +196,8 @@ function render(){
 $("rows").addEventListener("click",e=>{
   const tr=e.target.closest("tr"); if(!tr) return; const id=tr.dataset.id;
   if(e.target.type==="checkbox"){ tot.has(id)?tot.delete(id):tot.add(id); save(); }
-  else { sel.has(id)?(sel.delete(id),delete hist[id]):sel.add(id); }
-  render();});
+  else { sel.has(id)?sel.delete(id):sel.add(id); }
+  prune(); render();});
 $("filter").onchange=$("q").oninput=render;
 $("others").oninput=()=>{others=Math.max(0,+$("others").value||0); save(); render();};
 $("eff").oninput=()=>{eff=Math.min(100,Math.max(50,+$("eff").value||100)); save(); render();};
@@ -199,17 +205,23 @@ $("eff").oninput=()=>{eff=Math.min(100,Math.max(50,+$("eff").value||100)); save(
 function draw(){
   const c=$("chart"), g=c.getContext("2d"), W=c.width, H=c.height;
   g.clearRect(0,0,W,H);
-  const ids=["TOTAL",...sel].filter(id=>hist[id]&&hist[id].length>1);
-  if(!ids.length) return;
+  const ids=["TOTAL",...new Set([...tot,...sel])].filter(id=>hist[id]&&hist[id].length>1);
+  const lg=$("legend");
+  if(!ids.length){lg.innerHTML="";return;}
   let max=0; ids.forEach(id=>hist[id].forEach(v=>max=Math.max(max,v))); max=max*1.1||1;
   g.strokeStyle="#8884"; g.fillStyle="#888"; g.font="12px sans-serif"; g.lineWidth=1;
   for(let i=0;i<=4;i++){const y=H-20-(H-30)*i/4; g.beginPath();g.moveTo(40,y);g.lineTo(W,y);g.stroke();
     g.fillText((max*i/4).toFixed(0),4,y+4);}
-  ids.forEach((id,n)=>{
-    const h=hist[id], d=data.find(x=>x.id===id); g.strokeStyle=colors[n%colors.length]; g.lineWidth=id==="TOTAL"?3:2;
-    g.beginPath(); h.forEach((v,i)=>{const x=40+(W-40)*i/(MAXPTS-1), y=H-20-(H-30)*v/max;
-      i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke();
-    g.fillStyle=colors[n%colors.length]; g.fillText(id==="TOTAL"?"Estimation totale":(d?d.label:id),50+n*170,14);
+  const t=total();
+  lg.innerHTML=ids.map(id=>{
+    const d=data.find(x=>x.id===id);
+    const name=id==="TOTAL"?"Estimation totale":(d?d.label:id);
+    const val=id==="TOTAL"?t.est:(d?d.value:NaN);
+    return `<span><i class="sw" style="background:${color(id)}"></i>${name}${isNaN(val)?"":" : "+val.toFixed(1)+" "+(d?d.unit:"W")}</span>`;}).join("");
+  ids.forEach(id=>{
+    const h=hist[id]; g.strokeStyle=color(id); g.lineWidth=id==="TOTAL"?3:2;
+    g.beginPath(); h.forEach((v,i)=>{const k=MAXPTS-h.length+i;
+      const x=40+(W-40)*k/(MAXPTS-1), y=H-20-(H-30)*v/max; i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke();
   });
 }
 tick(); setInterval(tick,1000);
