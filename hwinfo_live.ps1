@@ -1,5 +1,5 @@
 ﻿<#
-  hwinfo_live.ps1 - ConsoPC : tableau en direct des capteurs HWiNFO (sans Python)
+  hwinfo_live.ps1 (v3) - ConsoPC : tableau en direct des capteurs HWiNFO (sans Python)
 
   Lit les valeurs que HWiNFO publie dans le registre Windows
   (HKCU\SOFTWARE\HWiNFO64\VSB) et les affiche dans une page web locale.
@@ -59,11 +59,11 @@ function Get-DemoReadings {
       value = $v; min = $s.min; max = $s.max; avg = $s.sum / $s.n }
     $n++
   }
-  return ,$out
+  return $out
 }
 
 function Get-Readings {
-  if ($Demo) { return ,(Get-DemoReadings) }
+  if ($Demo) { return (Get-DemoReadings) }
   if (-not (Test-Path $regPath)) {
     throw "Aucune valeur de HWiNFO dans le registre : activez 'Enable reporting to Gadget' et cochez des capteurs (onglet HWiNFO Gadget)."
   }
@@ -79,19 +79,24 @@ function Get-Readings {
     $valStr = [string]$k."Value$i"; $raw = [string]$k."ValueRaw$i"
     $unit = ''
     if ($valStr -match '^\s*[-+]?[\d\s.,]+\s*(.*)$') { $unit = $Matches[1].Trim() }
+    if (-not $unit) {
+      if ($label -match '(?i)energie|énergie|power|ppt') { $unit = 'W' }
+      elseif ($label -match '(?i)temp') { $unit = '°C' }
+      elseif ($label -match '(?i)clock|horloge') { $unit = 'MHz' }
+    }
     $v = 0.0
     if (-not [double]::TryParse(($raw -replace ',', '.'), [Globalization.NumberStyles]::Float, $inv, [ref]$v)) { continue }
     $s = Add-Stat "$i|$sensor|$label" $v
     $out += [ordered]@{ id = "0:$i"; sensor = $sensor; label = $label; type = (Get-Type $unit); unit = $unit
       value = $v; min = $s.min; max = $s.max; avg = $s.sum / $s.n }
   }
-  return ,$out
+  return $out
 }
 
 $page = @'
 <!doctype html>
 <html lang="fr"><head><meta charset="utf-8">
-<title>HWiNFO – Consommation en direct</title>
+<title>ConsoPC – Consommation en direct</title>
 <style>
  :root{color-scheme:light dark;font-family:system-ui,Segoe UI,Calibri,sans-serif}
  body{margin:0;padding:20px;background:#f4f4f5;color:#18181b}
@@ -106,16 +111,19 @@ $page = @'
  th,td{padding:6px 10px;border-bottom:1px solid #8884;text-align:left}
  th{background:#e4e4e7;cursor:default;position:sticky;top:0}
  td.num{text-align:right;font-variant-numeric:tabular-nums}
- tr.sel td{outline:0;background:#2563eb22}
+ td.chk{width:28px;text-align:center}
+ tr.sel td{background:#2563eb22}
  tr{cursor:pointer}
  .meter{height:6px;background:#8883;border-radius:3px;min-width:80px}
  .meter i{display:block;height:100%;background:#2563eb;border-radius:3px}
  canvas{width:100%;height:220px;background:#8881;border-radius:6px;margin:12px 0}
  .err{color:#dc2626;font-weight:600}
 </style></head><body>
-<h1>HWiNFO – Consommation en direct</h1>
+<h1>ConsoPC – Consommation en direct</h1>
 <div class="bar">
-  <div>Total puissance sélectionnée<div class="total" id="total">– W</div></div>
+  <div>Estimation conso PC<div class="total" id="total">– W</div><div class="muted" id="detail"></div></div>
+  <label>Autres composants (W) <input id="others" type="number" min="0" step="5" value="0" style="width:70px"></label>
+  <label>Rendement alim. (%) <input id="eff" type="number" min="50" max="100" step="1" value="100" style="width:70px"></label>
   <label>Afficher
     <select id="filter">
       <option value="power">Puissance (W)</option>
@@ -128,25 +136,32 @@ $page = @'
   <span class="muted" id="status">connexion…</span>
 </div>
 <canvas id="chart" width="1200" height="220"></canvas>
-<div class="muted">Clic sur une ligne = l'ajouter/retirer du graphique et du total.</div>
-<table><thead><tr><th>Capteur</th><th>Mesure</th><th>Actuel</th><th>Min</th><th>Moy</th><th>Max</th><th></th></tr></thead>
+<div class="muted">Colonne Σ : cochez les lignes à additionner dans l'estimation (évitez de cocher des lignes qui se recoupent). Clic ailleurs sur une ligne : l'ajouter au graphique.</div>
+<table><thead><tr><th title="Compter dans le total">Σ</th><th>Capteur</th><th>Mesure</th><th>Actuel</th><th>Min</th><th>Moy</th><th>Max</th><th></th></tr></thead>
 <tbody id="rows"></tbody></table>
 <script>
-const sel=new Set(), hist={}; const MAXPTS=300;
-let data=[], first=true;
+const sel=new Set(), tot=new Set(), hist={}, MAXPTS=300;
+let data=[], others=0, eff=100;
+try{const s=JSON.parse(localStorage.getItem("consopc")||"{}");
+  (s.tot||[]).forEach(i=>tot.add(i)); others=+s.others||0; eff=+s.eff||100;}catch(e){}
+const save=()=>{try{localStorage.setItem("consopc",JSON.stringify({tot:[...tot],others,eff}))}catch(e){}};
 const $=id=>document.getElementById(id);
+$("others").value=others; $("eff").value=eff;
 const fmt=(v,u)=>(Math.abs(v)>=100?v.toFixed(0):v.toFixed(2))+" "+u;
-const colors=["#2563eb","#dc2626","#16a34a","#d97706","#9333ea","#0891b2","#be185d","#4d7c0f"];
+const colors=["#111827","#2563eb","#dc2626","#16a34a","#d97706","#9333ea","#0891b2","#be185d"];
+const push=(k,v)=>{(hist[k]??=[]).push(v); if(hist[k].length>MAXPTS) hist[k].shift();};
 
+function total(){
+  const sum=data.filter(d=>tot.has(d.id)&&d.unit==="W").reduce((a,d)=>a+d.value,0);
+  return {sum, est:(sum+others)/(eff/100)};
+}
 async function tick(){
   try{
     const r=await fetch("/data",{cache:"no-store"}); const j=await r.json();
     if(j.error){$("status").innerHTML='<span class="err">'+j.error+'</span>';return;}
     data=j.readings;
-    if(first){ // présélection : tout ce qui est puissance en W
-      data.filter(d=>d.type==="power").forEach(d=>sel.add(d.id)); first=false;}
-    data.forEach(d=>{ if(sel.has(d.id)){ (hist[d.id]??=[]).push(d.value);
-        if(hist[d.id].length>MAXPTS) hist[d.id].shift(); }});
+    push("TOTAL",total().est);
+    data.forEach(d=>{ if(sel.has(d.id)) push(d.id,d.value); });
     $("status").textContent="mis à jour "+new Date(j.time*1000).toLocaleTimeString();
     render();
   }catch(e){$("status").innerHTML='<span class="err">serveur injoignable</span>';}
@@ -158,40 +173,47 @@ function render(){
   const maxByUnit={}; rows.forEach(d=>maxByUnit[d.unit]=Math.max(maxByUnit[d.unit]||0,d.max,d.value));
   $("rows").innerHTML=rows.map(d=>{
     const pct=maxByUnit[d.unit]?Math.min(100,d.value/maxByUnit[d.unit]*100):0;
+    const chk=d.unit==="W"?`<input type="checkbox" ${tot.has(d.id)?"checked":""}>`:"";
     return `<tr data-id="${d.id}" class="${sel.has(d.id)?"sel":""}">
-      <td>${d.sensor}</td><td>${d.label}</td>
+      <td class="chk">${chk}</td><td>${d.sensor}</td><td>${d.label}</td>
       <td class="num"><b>${fmt(d.value,d.unit)}</b></td>
       <td class="num">${fmt(d.min,d.unit)}</td><td class="num">${fmt(d.avg,d.unit)}</td>
       <td class="num">${fmt(d.max,d.unit)}</td>
       <td><div class="meter"><i style="width:${pct}%"></i></div></td></tr>`}).join("");
-  const tot=data.filter(d=>sel.has(d.id)&&d.unit==="W").reduce((a,d)=>a+d.value,0);
-  $("total").textContent=tot.toFixed(1)+" W";
+  const t=total();
+  $("total").textContent=t.est.toFixed(1)+" W";
+  $("detail").textContent=tot.size?
+    "lignes cochées : "+t.sum.toFixed(1)+" W + autres : "+others+" W"+(eff<100?" ÷ rendement "+eff+" %":""):
+    "Cochez des lignes dans la colonne Σ pour calculer l'estimation";
   draw();
 }
 $("rows").addEventListener("click",e=>{
   const tr=e.target.closest("tr"); if(!tr) return; const id=tr.dataset.id;
-  sel.has(id)?(sel.delete(id),delete hist[id]):sel.add(id); render();});
+  if(e.target.type==="checkbox"){ tot.has(id)?tot.delete(id):tot.add(id); save(); }
+  else { sel.has(id)?(sel.delete(id),delete hist[id]):sel.add(id); }
+  render();});
 $("filter").onchange=$("q").oninput=render;
+$("others").oninput=()=>{others=Math.max(0,+$("others").value||0); save(); render();};
+$("eff").oninput=()=>{eff=Math.min(100,Math.max(50,+$("eff").value||100)); save(); render();};
 
 function draw(){
   const c=$("chart"), g=c.getContext("2d"), W=c.width, H=c.height;
   g.clearRect(0,0,W,H);
-  const ids=[...sel].filter(id=>hist[id]&&hist[id].length>1);
+  const ids=["TOTAL",...sel].filter(id=>hist[id]&&hist[id].length>1);
   if(!ids.length) return;
   let max=0; ids.forEach(id=>hist[id].forEach(v=>max=Math.max(max,v))); max=max*1.1||1;
   g.strokeStyle="#8884"; g.fillStyle="#888"; g.font="12px sans-serif"; g.lineWidth=1;
   for(let i=0;i<=4;i++){const y=H-20-(H-30)*i/4; g.beginPath();g.moveTo(40,y);g.lineTo(W,y);g.stroke();
     g.fillText((max*i/4).toFixed(0),4,y+4);}
   ids.forEach((id,n)=>{
-    const h=hist[id], d=data.find(x=>x.id===id); g.strokeStyle=colors[n%colors.length]; g.lineWidth=2;
+    const h=hist[id], d=data.find(x=>x.id===id); g.strokeStyle=colors[n%colors.length]; g.lineWidth=id==="TOTAL"?3:2;
     g.beginPath(); h.forEach((v,i)=>{const x=40+(W-40)*i/(MAXPTS-1), y=H-20-(H-30)*v/max;
       i?g.lineTo(x,y):g.moveTo(x,y);}); g.stroke();
-    g.fillStyle=colors[n%colors.length]; g.fillText((d?d.label:id),50+n*170,14);
+    g.fillStyle=colors[n%colors.length]; g.fillText(id==="TOTAL"?"Estimation totale":(d?d.label:id),50+n*170,14);
   });
 }
 tick(); setInterval(tick,1000);
 </script></body></html>
-
 '@
 
 $listener = New-Object System.Net.HttpListener
